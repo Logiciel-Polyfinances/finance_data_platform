@@ -26,6 +26,19 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def spa_no_cache(request: Request, call_next):
+    """The SPA entry (index.html) must always be revalidated so a fresh deploy's
+    new hashed bundle is picked up without a manual hard refresh. Content-hashed
+    assets under /app/assets/ stay cacheable (their name changes on each build).
+    """
+    response = await call_next(request)
+    path = request.url.path
+    if path in ("/app", "/app/") or path.endswith(".html"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Catches anything that isn't already an HTTPException/validation error
