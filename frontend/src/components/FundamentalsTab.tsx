@@ -60,7 +60,8 @@ interface MetricRow {
 
 // ---- Curated "Key financials" -------------------------------------------------
 function KeyFinancials({ apiKey, ticker }: TickerProps) {
-  const [form, setForm] = useState("10-Q");
+  // Period, not SEC form: works uniformly for US (10-Q/10-K) and CAD (YF-Q/YF-A).
+  const [period, setPeriod] = useState<"quarterly" | "annual">("quarterly");
   const [rows, setRows] = useState<Fundamental[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -70,7 +71,7 @@ function KeyFinancials({ apiKey, ticker }: TickerProps) {
     setError(null);
     const qs = new URLSearchParams({
       concepts: KEY_METRIC_CONCEPTS.join(","),
-      form,
+      period,
       limit: "3000",
       sort_by: "period_end",
       order: "desc",
@@ -78,7 +79,7 @@ function KeyFinancials({ apiKey, ticker }: TickerProps) {
     api<Fundamental[]>(`/fundamentals/${ticker}?${qs}`, apiKey)
       .then(setRows)
       .catch((e) => setError(errMsg(e)));
-  }, [ticker, apiKey, form]);
+  }, [ticker, apiKey, period]);
 
   const { periods, metricRows } = useMemo<{ periods: string[]; metricRows: MetricRow[] }>(() => {
     if (!rows || rows.length === 0) return { periods: [], metricRows: [] };
@@ -104,9 +105,9 @@ function KeyFinancials({ apiKey, ticker }: TickerProps) {
       <div className="row">
         <strong>Key financials</strong>
         <div className="tabs" style={{ marginBottom: 0, marginLeft: "auto" }}>
-          {["10-Q", "10-K"].map((f) => (
-            <button key={f} className={form === f ? "active" : ""} onClick={() => setForm(f)}>
-              {f === "10-Q" ? "Quarterly" : "Annual"}
+          {(["quarterly", "annual"] as const).map((p) => (
+            <button key={p} className={period === p ? "active" : ""} onClick={() => setPeriod(p)}>
+              {p === "quarterly" ? "Quarterly" : "Annual"}
             </button>
           ))}
         </div>
@@ -115,7 +116,7 @@ function KeyFinancials({ apiKey, ticker }: TickerProps) {
       {error && <div className="empty">Error: {error}</div>}
       {!error && rows === null && <div className="empty">Loading...</div>}
       {!error && rows !== null && metricRows.length === 0 && (
-        <div className="empty">No key financials for {form} filings.</div>
+        <div className="empty">No {period} key financials on file.</div>
       )}
       {!error && metricRows.length > 0 && (
         <>
@@ -246,7 +247,7 @@ function ConceptPicker({ concepts, selected, setSelected }: ConceptPickerProps) 
 function Explorer({ apiKey, ticker }: TickerProps) {
   const [concepts, setConcepts] = useState<string[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
-  const [form, setForm] = useState("");
+  const [period, setPeriod] = useState("");
   const [sortBy, setSortBy] = useState("period_end");
   const [order, setOrder] = useState<Order>("desc");
   const [pageSize, setPageSize] = useState(50);
@@ -292,14 +293,14 @@ function Explorer({ apiKey, ticker }: TickerProps) {
       order,
     });
     if (selected.length) qs.set("concepts", selected.join(","));
-    if (form) qs.set("form", form);
+    if (period) qs.set("period", period);
     apiWithTotal<Fundamental[]>(`/fundamentals/${ticker}?${qs}`, apiKey)
       .then(({ data, total }) => {
         setRows(data);
         setTotal(total);
       })
       .catch((e) => setError(errMsg(e)));
-  }, [ticker, apiKey, selected, form, sortBy, order, pageSize, offset]);
+  }, [ticker, apiKey, selected, period, sortBy, order, pageSize, offset]);
 
   function changeSort(key: string) {
     if (key === sortBy) setOrder((o) => (o === "asc" ? "desc" : "asc"));
@@ -320,22 +321,21 @@ function Explorer({ apiKey, ticker }: TickerProps) {
       <div className="row">
         <ConceptPicker concepts={concepts} selected={selected} setSelected={updateSelected} />
         <select
-          value={form}
+          value={period}
           onChange={(e) => {
-            setForm(e.target.value);
+            setPeriod(e.target.value);
             setPage(0);
           }}
         >
-          <option value="">All forms</option>
-          <option value="10-K">10-K (annual)</option>
-          <option value="10-Q">10-Q (quarterly)</option>
-          <option value="8-K">8-K</option>
+          <option value="">All periods</option>
+          <option value="annual">Annual</option>
+          <option value="quarterly">Quarterly</option>
         </select>
-        {(selected.length > 0 || form) && (
+        {(selected.length > 0 || period) && (
           <button
             onClick={() => {
               updateSelected([]);
-              setForm("");
+              setPeriod("");
             }}
           >
             Clear

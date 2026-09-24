@@ -44,7 +44,12 @@ def get_fundamentals_route(
     response: Response,
     concept: str | None = None,
     concepts: str | None = Query(default=None, description="Comma-separated concept tags (OR filter)."),
-    form: str | None = Query(default=None, description="Filter by SEC form, e.g. 10-K or 10-Q."),
+    form: str | None = Query(default=None, description="Filter by exact form (10-K, YF-A, ...)."),
+    period: Literal["annual", "quarterly"] | None = Query(
+        default=None,
+        description="Source-agnostic period filter (annual=fp FY, quarterly=fp Q1-Q4). "
+        "Works for both SEC (US) and yfinance (CAD) rows.",
+    ),
     limit: int = Query(default=500, le=5000),
     offset: int = Query(default=0, ge=0),
     sort_by: Literal["period_end", "concept", "val", "fy", "form", "fp"] = "period_end",
@@ -52,7 +57,9 @@ def get_fundamentals_route(
 ):
     ticker = ticker.upper()
     concepts_list = [c.strip() for c in concepts.split(",") if c.strip()] if concepts else None
-    cache_key = f"fundamentals:{ticker}:{concept}:{concepts}:{form}:{limit}:{offset}:{sort_by}:{order}"
+    cache_key = (
+        f"fundamentals:{ticker}:{concept}:{concepts}:{form}:{period}:{limit}:{offset}:{sort_by}:{order}"
+    )
 
     cached = cache_get_json(cache_key)
     if cached is not None:
@@ -69,12 +76,13 @@ def get_fundamentals_route(
         concept=concept,
         concepts=concepts_list,
         form=form,
+        period=period,
         limit=limit,
         offset=offset,
         sort_by=sort_by,
         order=order,
     )
-    total = count_fundamentals(db, ticker, concept=concept, concepts=concepts_list, form=form)
+    total = count_fundamentals(db, ticker, concept=concept, concepts=concepts_list, form=form, period=period)
 
     payload = [FundamentalResponse.model_validate(r).model_dump(mode="json") for r in rows]
     cache_set_json(cache_key, {"rows": payload, "total": total}, ttl_seconds=_CACHE_TTL_SECONDS)

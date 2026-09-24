@@ -9,7 +9,9 @@ from sqlalchemy.orm import Session
 from src.api.deps import require_read, require_write
 from src.api.schemas import (
     FigiResponse,
+    FundamentalRatioResponse,
     InstrumentCreate,
+    InstrumentMetricResponse,
     InstrumentResponse,
     RefreshRequest,
     RefreshResponse,
@@ -20,7 +22,9 @@ from src.core.cache import cache_get_json, cache_set_json
 from src.core.database import get_db
 from src.core.logger import get_logger
 from src.core.ratelimit import try_acquire_lock
+from src.data.crud.fundamental_ratios import get_latest_ratios
 from src.data.crud.instrument_figi import get_figi_mappings
+from src.data.crud.instrument_metrics import get_metrics
 from src.data.crud.universal_instruments import (
     count_instruments,
     get_instrument,
@@ -222,6 +226,36 @@ def update_scheduled_route(ticker: str, body: ScheduledUpdate, db: DbSession):
     if instrument is None:
         raise HTTPException(status_code=404, detail=f"'{ticker}' is not registered")
     return instrument
+
+
+@router.get(
+    "/{ticker}/metrics",
+    response_model=list[InstrumentMetricResponse],
+    dependencies=[Depends(require_read)],
+)
+def get_instrument_metrics_route(ticker: str, db: DbSession):
+    """Derived risk KPIs + alpha/beta snapshots (instrument_metrics), one row per
+    window, freshest first. Empty list if none have been computed yet."""
+    ticker = ticker.upper()
+    if get_instrument(db, ticker) is None:
+        raise HTTPException(status_code=404, detail=f"'{ticker}' is not registered")
+    return get_metrics(db, ticker)
+
+
+@router.get(
+    "/{ticker}/ratios",
+    response_model=FundamentalRatioResponse,
+    dependencies=[Depends(require_read)],
+)
+def get_instrument_ratios_route(ticker: str, db: DbSession):
+    """Latest derived fundamental ratios (fundamental_ratios) for a ticker."""
+    ticker = ticker.upper()
+    if get_instrument(db, ticker) is None:
+        raise HTTPException(status_code=404, detail=f"'{ticker}' is not registered")
+    row = get_latest_ratios(db, ticker)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"no ratios computed yet for '{ticker}'")
+    return row
 
 
 @router.get("/{ticker}/figi", response_model=list[FigiResponse], dependencies=[Depends(require_read)])

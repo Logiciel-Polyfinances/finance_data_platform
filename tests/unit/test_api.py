@@ -283,6 +283,7 @@ def test_get_fundamentals_returns_rows(monkeypatch, client):
         concept=None,
         concepts=None,
         form=None,
+        period=None,
         limit=500,
         offset=0,
         sort_by="period_end",
@@ -291,7 +292,7 @@ def test_get_fundamentals_returns_rows(monkeypatch, client):
     monkeypatch.setattr(
         fundamentals_router,
         "count_fundamentals",
-        lambda db, ticker, concept=None, concepts=None, form=None: 1,
+        lambda db, ticker, concept=None, concepts=None, form=None, period=None: 1,
     )
 
     resp = client.get("/v1/fundamentals/SOFI")

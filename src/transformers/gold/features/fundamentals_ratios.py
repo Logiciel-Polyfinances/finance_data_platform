@@ -35,6 +35,11 @@ CONCEPTS: dict[str, list[str]] = {
         "us-gaap:CommonStockSharesOutstanding",
         "dei:EntityCommonStockSharesOutstanding",
         "us-gaap:CommonStockSharesIssued",
+        # weighted-average share counts: the fallback when a company stops
+        # tagging point-in-time shares (e.g. HOOD tags CommonStockShares only
+        # through 2021, and that value is 0) -- these stay current.
+        "us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding",
+        "us-gaap:WeightedAverageNumberOfSharesOutstandingBasic",
     ],
 }
 
@@ -61,6 +66,13 @@ def _pick(df: pl.DataFrame, metric: str) -> pl.DataFrame:
 
 def _latest(df: pl.DataFrame, metric: str) -> float | None:
     sub = _pick(df, metric).sort("period_end")
+    return float(sub["val"][-1]) if sub.height else None
+
+
+def _latest_shares(df: pl.DataFrame) -> float | None:
+    """Freshest *positive* share count across all share concepts (a 0/None
+    point-in-time tag must not shadow a usable weighted-average count)."""
+    sub = df.filter(pl.col("concept").is_in(CONCEPTS["shares"]) & (pl.col("val") > 0)).sort("period_end")
     return float(sub["val"][-1]) if sub.height else None
 
 
@@ -130,7 +142,7 @@ def compute_fundamental_ratios(
 
     m = market or {}
     price = m.get("price")
-    shares = m.get("shares") or _latest(df, "shares")
+    shares = m.get("shares") or _latest_shares(df)
     market_cap = m.get("market_cap")
     if market_cap is None and price is not None and shares:
         market_cap = price * shares

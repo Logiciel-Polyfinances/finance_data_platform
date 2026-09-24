@@ -54,7 +54,13 @@ SORTABLE_COLUMNS = {
 }
 
 
-def _apply_filters(stmt, ticker, concept, concepts, form):
+# Source-agnostic period grouping: SEC (fp="FY"/"Q1".."Q4") and yfinance
+# (same fp convention) share this, so the UI never has to know the form flavor
+# (10-K/10-Q for US vs YF-A/YF-Q for CAD).
+_QUARTERLY_FPS = ["Q1", "Q2", "Q3", "Q4"]
+
+
+def _apply_filters(stmt, ticker, concept, concepts, form, period=None):
     stmt = stmt.where(Fundamental.ticker == ticker.upper())
     if concept is not None:
         stmt = stmt.where(Fundamental.concept == concept)
@@ -62,6 +68,10 @@ def _apply_filters(stmt, ticker, concept, concepts, form):
         stmt = stmt.where(Fundamental.concept.in_(concepts))
     if form is not None:
         stmt = stmt.where(Fundamental.form == form)
+    if period == "annual":
+        stmt = stmt.where(Fundamental.fp == "FY")
+    elif period == "quarterly":
+        stmt = stmt.where(Fundamental.fp.in_(_QUARTERLY_FPS))
     return stmt
 
 
@@ -72,12 +82,13 @@ def get_fundamentals(
     concept: str | None = None,
     concepts: list[str] | None = None,
     form: str | None = None,
+    period: str | None = None,
     limit: int = 500,
     offset: int = 0,
     sort_by: str = "period_end",
     order: str = "desc",
 ) -> list[Fundamental]:
-    stmt = _apply_filters(select(Fundamental), ticker, concept, concepts, form)
+    stmt = _apply_filters(select(Fundamental), ticker, concept, concepts, form, period)
 
     col = SORTABLE_COLUMNS.get(sort_by, Fundamental.period_end)
     col = col.desc() if order == "desc" else col.asc()
@@ -93,8 +104,11 @@ def count_fundamentals(
     concept: str | None = None,
     concepts: list[str] | None = None,
     form: str | None = None,
+    period: str | None = None,
 ) -> int:
-    stmt = _apply_filters(select(sa.func.count()).select_from(Fundamental), ticker, concept, concepts, form)
+    stmt = _apply_filters(
+        select(sa.func.count()).select_from(Fundamental), ticker, concept, concepts, form, period
+    )
     return session.execute(stmt).scalar_one()
 
 

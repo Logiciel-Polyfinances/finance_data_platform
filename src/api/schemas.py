@@ -89,6 +89,53 @@ class MacroSeriesResponse(BaseModel):
     value: float | None
 
 
+class InstrumentMetricResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    as_of: date
+    window: str
+    rf_annual: float | None
+    sharpe: float | None
+    sortino: float | None
+    max_drawdown: float | None
+    var_95: float | None
+    volatility: float | None
+    total_return: float | None
+    beta_sp500: float | None
+    alpha_sp500: float | None
+    alpha_label_sp500: str | None
+    beta_tsx: float | None
+    alpha_tsx: float | None
+    alpha_label_tsx: str | None
+
+
+class FundamentalRatioResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    ticker: str
+    as_of: date
+    gross_margin: float | None
+    operating_margin: float | None
+    net_margin: float | None
+    roe: float | None
+    roa: float | None
+    roic: float | None
+    net_debt: float | None
+    net_debt_ebitda: float | None
+    debt_to_equity: float | None
+    revenue_yoy: float | None
+    net_income_yoy: float | None
+    eps_ttm: float | None
+    pe: float | None
+    ps: float | None
+    pb: float | None
+    ev: float | None
+    ev_ebitda: float | None
+    ev_sales: float | None
+    fcf_yield: float | None
+
+
 class ApiKeyCreate(BaseModel):
     label: str
     # Comma-separated grants from {"read", "write"}; defaults to read-only.

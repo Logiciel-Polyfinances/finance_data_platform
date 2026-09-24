@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import PricesTab from "./PricesTab";
 import FundamentalsTab from "./FundamentalsTab";
+import MetricsTab from "./MetricsTab";
 import type { Instrument } from "../types";
 
 interface TickerDetailSectionProps {
@@ -11,6 +12,7 @@ interface TickerDetailSectionProps {
 const TABS = [
   { key: "prices", label: "Prices" },
   { key: "fundamentals", label: "Fundamentals" },
+  { key: "metrics", label: "Metrics & charts" },
 ];
 
 export default function TickerDetailSection({ apiKey, instruments }: TickerDetailSectionProps) {
@@ -43,6 +45,7 @@ export default function TickerDetailSection({ apiKey, instruments }: TickerDetai
       </div>
       {tab === "prices" && <PricesTab apiKey={apiKey} ticker={ticker} />}
       {tab === "fundamentals" && <FundamentalsTab apiKey={apiKey} ticker={ticker} />}
+      {tab === "metrics" && <MetricsTab apiKey={apiKey} ticker={ticker} />}
     </section>
   );
 }

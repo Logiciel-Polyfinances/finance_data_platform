@@ -42,6 +42,16 @@ def upsert_instrument_metrics(session: Session, rows: list[dict]) -> int:
     return result.rowcount or 0
 
 
+def get_metrics(session: Session, symbol: str) -> list[InstrumentMetric]:
+    """Every metric snapshot on file for a symbol, freshest first."""
+    stmt = (
+        select(InstrumentMetric)
+        .where(InstrumentMetric.symbol == symbol.upper())
+        .order_by(InstrumentMetric.as_of.desc(), InstrumentMetric.window.asc())
+    )
+    return list(session.execute(stmt).scalars().all())
+
+
 def get_latest_metrics(
     session: Session, symbol: str, *, window: str | None = None
 ) -> InstrumentMetric | None:

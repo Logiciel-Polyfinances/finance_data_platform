@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.api.routes import api_keys, fundamentals, health, instruments, macro, prices, runs
+from src.api.routes import api_keys, charts, fundamentals, health, instruments, macro, prices, runs
 from src.core.config import settings
 from src.core.logger import get_logger
 
@@ -44,6 +44,7 @@ app.include_router(prices.router, prefix=API_V1_PREFIX)
 app.include_router(fundamentals.router, prefix=API_V1_PREFIX)
 app.include_router(macro.router, prefix=API_V1_PREFIX)
 app.include_router(runs.router, prefix=API_V1_PREFIX)
+app.include_router(charts.router, prefix=API_V1_PREFIX)
 
 if FRONTEND_DIR.is_dir():
     app.mount("/app", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")

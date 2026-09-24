@@ -71,12 +71,29 @@ def _load_price_frame(session, symbols: list[str], start: date) -> pl.DataFrame:
     )
 
 
-def run_metrics_pipeline(window: str = "1y") -> int:
-    if window not in WINDOW_DAYS:
-        raise ValueError(f"Unknown window '{window}'. Known: {sorted(WINDOW_DAYS)}")
+def _compute_window(df: pl.DataFrame, universe: list[str], rf: float) -> pl.DataFrame:
+    """Per-symbol risk/period/benchmark metrics for an already-windowed frame."""
+    risk = compute_risk_kpis(df, rf_annual=rf)
+    period = compute_period_stats(df).select(["symbol", "total_return"])
+    bench = compute_benchmark_metrics(df, rf)
+
+    out = risk.join(period, on="symbol", how="left").join(bench, on="symbol", how="left")
+    out = out.filter(pl.col("symbol").is_in(universe))
+
+    # NaN (e.g. too few points) -> NULL so Postgres stores clean nulls
+    present = [c for c in _METRIC_COLS if c in out.columns]
+    return out.with_columns([pl.col(c).cast(pl.Float64).fill_nan(None) for c in present])
+
+
+def run_metrics_pipeline(windows: list[str] | None = None) -> int:
+    windows = windows or list(WINDOW_DAYS)
+    unknown = [w for w in windows if w not in WINDOW_DAYS]
+    if unknown:
+        raise ValueError(f"Unknown window(s) {unknown}. Known: {sorted(WINDOW_DAYS)}")
 
     as_of = date.today()
-    start = as_of - timedelta(days=WINDOW_DAYS[window])
+    # Load once for the widest window, then slice each window from it.
+    max_start = as_of - timedelta(days=max(WINDOW_DAYS[w] for w in windows))
 
     with SessionLocal() as session:
         tracking_run_id = start_run(session, dataset="metrics", run_date=as_of)
@@ -86,40 +103,32 @@ def run_metrics_pipeline(window: str = "1y") -> int:
             universe = get_scheduled_universe(session)
             rf = _get_rf(session)
             symbols = sorted(set(universe) | set(BENCHMARKS.values()))
-            df = _load_price_frame(session, symbols, start)
+            df_full = _load_price_frame(session, symbols, max_start)
 
-        if df.height == 0:
-            logger.info("SKIP: no prices in window %s (start=%s).", window, start)
+        if df_full.height == 0:
+            logger.info("SKIP: no prices since %s.", max_start)
             with SessionLocal() as session:
-                finish_run(
-                    session, tracking_run_id, status="success", items_total=0, notes="no prices in window"
-                )
+                finish_run(session, tracking_run_id, status="success", items_total=0, notes="no prices")
             return 0
 
-        df = add_return(df, "close")
+        df_full = add_return(df_full, "close")
 
-        risk = compute_risk_kpis(df, rf_annual=rf)
-        period = compute_period_stats(df).select(["symbol", "total_return"])
-        bench = compute_benchmark_metrics(df, rf)
+        frames: list[pl.DataFrame] = []
+        for window in windows:
+            wstart = as_of - timedelta(days=WINDOW_DAYS[window])
+            df = df_full.filter(pl.col("ts") >= wstart)
+            out = _compute_window(df, universe, rf).with_columns(
+                as_of=pl.lit(as_of),
+                window=pl.lit(window),
+                rf_annual=pl.lit(rf),
+                source=pl.lit("derived"),
+                run_id=pl.lit(str(tracking_run_id)),
+            )
+            frames.append(out)
 
-        out = risk.join(period, on="symbol", how="left").join(bench, on="symbol", how="left")
-        # keep the scheduled universe (drop benchmark-only rows unless scheduled)
-        out = out.filter(pl.col("symbol").is_in(universe))
-
-        # NaN (e.g. too few points) -> NULL so Postgres stores clean nulls
-        present = [c for c in _METRIC_COLS if c in out.columns]
-        out = out.with_columns([pl.col(c).cast(pl.Float64).fill_nan(None) for c in present])
-
-        out = out.with_columns(
-            as_of=pl.lit(as_of),
-            window=pl.lit(window),
-            rf_annual=pl.lit(rf),
-            source=pl.lit("derived"),
-            run_id=pl.lit(str(tracking_run_id)),
-        )
-
-        gold_rows = write_gold_metrics(out)
-        logger.info("metrics upsert completed, rows: %s", gold_rows)
+        combined = pl.concat(frames, how="vertical")
+        gold_rows = write_gold_metrics(combined)
+        logger.info("metrics upsert completed, rows: %s (windows=%s)", gold_rows, windows)
 
         with SessionLocal() as session:
             finish_run(

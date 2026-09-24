@@ -1,8 +1,67 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, apiWithTotal, errMsg, fmtNum } from "../api";
 import type { MacroCatalog, MacroPoint } from "../types";
+import TimeSeriesChart, { type TsPoint } from "./TimeSeriesChart";
 
 const PAGE_SIZES = [25, 50, 100, 250];
+
+const ACCENT = "#4f8cff"; // app accent, reads on the dark surface
+const MACRO_RANGES: [string, number][] = [
+  ["1Y", 365],
+  ["5Y", 1825],
+  ["10Y", 3650],
+  ["Max", 1e9],
+];
+
+const macroFmt = (v: number) =>
+  v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// Interactive line for one FRED/FX series (US or CAD alike).
+function MacroChart({ apiKey, series, label }: { apiKey: string; series: string; label: string }) {
+  const [points, setPoints] = useState<MacroPoint[] | null>(null);
+  const [range, setRange] = useState(1825);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!series) return;
+    setPoints(null);
+    setError(null);
+    api<MacroPoint[]>(`/macro/${series}?limit=5000&order=asc`, apiKey)
+      .then(setPoints)
+      .catch((e) => setError(errMsg(e)));
+  }, [series, apiKey]);
+
+  const data = useMemo<TsPoint[]>(() => {
+    if (!points) return [];
+    const clean = points.filter((p) => p.value != null) as (MacroPoint & { value: number })[];
+    const cutoff = range >= 1e9 ? "" : new Date(Date.now() - range * 864e5).toISOString().slice(0, 10);
+    const sliced = cutoff ? clean.filter((p) => p.ts >= cutoff) : clean;
+    return sliced.map((p) => ({ t: p.ts, v: p.value }));
+  }, [points, range]);
+
+  return (
+    <section style={{ marginBottom: 16 }}>
+      <div className="row">
+        <strong>{label}</strong>
+        <div className="tabs" style={{ marginBottom: 0, marginLeft: "auto" }}>
+          {MACRO_RANGES.map(([lbl, days]) => (
+            <button key={lbl} className={range === days ? "active" : ""} onClick={() => setRange(days)}>
+              {lbl}
+            </button>
+          ))}
+        </div>
+      </div>
+      {error && <div className="empty">No chart: {error}</div>}
+      {!error && points === null && <div className="empty">Loading chart...</div>}
+      {!error && points !== null && data.length > 1 && (
+        <TimeSeriesChart data={data} color={ACCENT} height={260} fmt={macroFmt} />
+      )}
+      {!error && points !== null && data.length <= 1 && (
+        <div className="empty">Not enough observations in range.</div>
+      )}
+    </section>
+  );
+}
 
 interface MacroSectionProps {
   apiKey: string;
@@ -58,6 +117,7 @@ export default function MacroSection({ apiKey }: MacroSectionProps) {
   }
 
   const options = catalog?.[group] || [];
+  const selectedLabel = options.find((o) => o.code === series)?.label || series;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   return (
@@ -112,6 +172,8 @@ export default function MacroSection({ apiKey }: MacroSectionProps) {
           </select>
         </div>
       </div>
+
+      {series && <MacroChart apiKey={apiKey} series={series} label={selectedLabel} />}
 
       {error && <div className="empty">Error: {error}</div>}
       {!error && rows === null && <div className="empty">Loading...</div>}

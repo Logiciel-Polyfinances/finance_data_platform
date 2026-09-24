@@ -34,6 +34,49 @@ export interface Fundamental {
   val: number;
 }
 
+export interface InstrumentMetric {
+  symbol: string;
+  as_of: string;
+  window: string;
+  rf_annual: number | null;
+  sharpe: number | null;
+  sortino: number | null;
+  max_drawdown: number | null;
+  var_95: number | null;
+  volatility: number | null;
+  total_return: number | null;
+  beta_sp500: number | null;
+  alpha_sp500: number | null;
+  alpha_label_sp500: string | null;
+  beta_tsx: number | null;
+  alpha_tsx: number | null;
+  alpha_label_tsx: string | null;
+}
+
+export interface FundamentalRatio {
+  ticker: string;
+  as_of: string;
+  gross_margin: number | null;
+  operating_margin: number | null;
+  net_margin: number | null;
+  roe: number | null;
+  roa: number | null;
+  roic: number | null;
+  net_debt: number | null;
+  net_debt_ebitda: number | null;
+  debt_to_equity: number | null;
+  revenue_yoy: number | null;
+  net_income_yoy: number | null;
+  eps_ttm: number | null;
+  pe: number | null;
+  ps: number | null;
+  pb: number | null;
+  ev: number | null;
+  ev_ebitda: number | null;
+  ev_sales: number | null;
+  fcf_yield: number | null;
+}
+
 export interface MacroPoint {
   series: string;
   ts: string;

@@ -62,6 +62,20 @@ export async function apiWithTotal<T = unknown>(
   return { data, total: Number.isFinite(total) ? total : fallback };
 }
 
+// Fetch a binary endpoint (e.g. a chart PNG) with the API key header and return
+// an object URL for an <img src>. Caller revokes it when done. <img> can't send
+// headers itself, so we fetch as a blob here.
+export async function apiBlobUrl(path: string, apiKey?: string): Promise<string> {
+  const headers: Record<string, string> = {};
+  if (apiKey) headers["X-API-Key"] = apiKey;
+  const res = await fetch(withBase(path), { headers });
+  if (!res.ok) {
+    const body = await parseJson(res);
+    raiseForStatus(res, body);
+  }
+  return URL.createObjectURL(await res.blob());
+}
+
 export function fmtNum(v: number | string | null | undefined, digits = 2): string {
   return v === null || v === undefined ? "" : Number(v).toFixed(digits);
 }
