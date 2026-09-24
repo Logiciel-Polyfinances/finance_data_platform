@@ -15,7 +15,9 @@ const PAGES: NavPage[] = [
 ];
 
 export default function App() {
-  const [apiKey, setApiKey] = useState<string>(() => localStorage.getItem("apiKey") || "");
+  const [apiKey, setApiKey] = useState<string>(
+    () => localStorage.getItem("apiKey") || import.meta.env.VITE_API_KEY || "",
+  );
   const [page, setPage] = useState<string>(() => localStorage.getItem("page") || "instruments");
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [refreshing, setRefreshing] = useState(false);

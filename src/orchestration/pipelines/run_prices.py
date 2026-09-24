@@ -21,7 +21,8 @@ from src.core.logger import get_logger
 from src.data.crud.ingestion_run import finish_run, start_run
 from src.data.crud.ingestion_watermark import get_last_ts, upsert_watermark
 from src.ingestion.clients.yahoo_client import ingest_yahoo_history_to_bronze
-from src.transformers.gold.features.returns import add_return
+from src.transformers.gold.features.returns import add_cumulative_return, add_log_return, add_return
+from src.transformers.gold.features.risk import add_drawdown
 from src.transformers.gold.writers.fetch_silver import fetch_parquet_from_silver
 from src.transformers.gold.writers.write_gold import write_gold_price1D
 from src.transformers.quality.checks import check_prices_1d
@@ -120,7 +121,12 @@ def gold_load(silver_info: dict) -> dict:
     for warning in report.warnings:
         logger.warning(warning)
 
+    # Per-row price features. Like close_returns, these are computed within the
+    # batch, so they are meaningful on multi-day backfills, not single-day runs.
     df_feat = add_return(df, "close")
+    df_feat = add_log_return(df_feat, "close")
+    df_feat = add_cumulative_return(df_feat, "close")
+    df_feat = add_drawdown(df_feat, "close")
     gold_rows = write_gold_price1D(df_feat)
 
     # advance the watermark per symbol to the max ts we just upserted

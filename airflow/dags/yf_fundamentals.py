@@ -23,17 +23,14 @@ default_args = {
 }
 
 with DAG(
-    dag_id="sec_fundamentals_weekly",
-    description="SEC EDGAR fundamentals (XBRL companyfacts): Bronze -> Silver -> Gold",
+    dag_id="yf_fundamentals_weekly",
+    description="yfinance fundamentals for non-US tickers (TSX): Bronze -> Silver -> Gold",
     default_args=default_args,
     start_date=datetime(2026, 3, 1, tzinfo=TZ),
-    # companyfacts always returns a company's *entire* XBRL history in one
-    # response (see run_fundamentals.py), and new filings land quarterly at
-    # most -- a weekly run is enough to stay current without hammering SEC.
-    schedule="0 7 * * 1",
+    schedule="0 8 * * 1",
     catchup=False,
     max_active_runs=1,
-    tags=["sec_edgar", "fundamentals", "medallion"],
+    tags=["yahoo", "fundamentals", "medallion"],
     params={
         "tickers_override": Param(
             default=None,
@@ -45,9 +42,9 @@ with DAG(
 
     @task.external_python(python=PIPELINE_PYTHON, expect_airflow=False)
     def get_tickers(override: str) -> list:
-        # Runs in the pipeline venv. `override` is a rendered template string:
-        # None renders as "None", an unset param as "", both meaning "use the
-        # scheduled universe from the DB".
+        # Runs in the pipeline venv. Without an override, take the scheduled
+        # universe and keep only the tickers SEC does not cover (".TO" / non-US);
+        # US names are handled by the SEC fundamentals DAG.
         import sys
 
         sys.path.insert(0, "/opt/project")
@@ -62,9 +59,7 @@ with DAG(
         with SessionLocal() as session:
             universe = get_scheduled_universe(session)
 
-        # SEC EDGAR only covers US filers: skip indices ("^") and non-US
-        # suffixed tickers (".TO", ...), which the yfinance DAG handles instead.
-        return [t for t in universe if "." not in t and "^" not in t]
+        return [t for t in universe if "." in t]
 
     @task.external_python(python=PIPELINE_PYTHON, expect_airflow=False)
     def run_ticker(ticker: str) -> int:
@@ -72,9 +67,9 @@ with DAG(
 
         sys.path.insert(0, "/opt/project")
 
-        from src.orchestration.pipelines.run_fundamentals import run_fundamentals_pipeline
+        from src.orchestration.pipelines.run_yf_fundamentals import run_yf_fundamentals_pipeline
 
-        return run_fundamentals_pipeline(ticker)
+        return run_yf_fundamentals_pipeline(ticker)
 
     tickers = get_tickers(override="{{ params.tickers_override }}")
     run_ticker.expand(ticker=tickers)  # type: ignore[attr-defined]

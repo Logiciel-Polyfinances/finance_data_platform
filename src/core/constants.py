@@ -5,6 +5,9 @@ Any important information will be stored there
 # Used when a ticker has no ingestion_watermark row yet (first-ever backfill).
 DEFAULT_BACKFILL_START = "2015-01-01"
 
+# Trading days per year, used to annualize daily risk/return metrics.
+TRADING_DAYS = 252
+
 # Canonical mapping: our internal series code -> FRED series_id.
 # This is the single source of truth (the old duplicate table that used to
 # live in src/ingestion/clients/fred_client.py has been removed).

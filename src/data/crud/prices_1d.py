@@ -26,6 +26,9 @@ def upsert_prices_1d(session: Session, rows: list[dict]) -> int:
         "dividends": stmt.excluded.dividends,
         "stock_split": stmt.excluded.stock_split,
         "close_returns": stmt.excluded.close_returns,
+        "close_log_returns": stmt.excluded.close_log_returns,
+        "close_cum_returns": stmt.excluded.close_cum_returns,
+        "drawdown": stmt.excluded.drawdown,
         "run_id": stmt.excluded.run_id,
         "ingested_at": sa.func.now(),
     }

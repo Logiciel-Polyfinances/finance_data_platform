@@ -71,6 +71,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Pre-authenticate the local UI: bake the local API key into the build
+        # so /app works without pasting a key. Matches API_KEY in .env.local.
+        VITE_API_KEY: local-dev-key
     ports:
       - "8000:8000"
     volumes:

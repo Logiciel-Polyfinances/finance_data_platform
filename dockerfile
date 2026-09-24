@@ -3,6 +3,12 @@
 # built static output (frontend/dist) is copied over below.
 FROM node:20-slim AS frontend-build
 
+# Optionally bake an API key into the build so a stack can ship a
+# pre-authenticated UI (the local compose passes local-dev-key). No arg -> empty
+# -> nothing baked in, so prod builds stay keyless.
+ARG VITE_API_KEY=""
+ENV VITE_API_KEY=$VITE_API_KEY
+
 WORKDIR /app/frontend
 
 COPY frontend/package.json frontend/package-lock.json ./

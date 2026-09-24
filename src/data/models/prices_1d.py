@@ -25,6 +25,9 @@ class Price1D(Base):
     dividends: Mapped[float | None] = mapped_column(Float)
     stock_split: Mapped[float | None] = mapped_column(Float)
     close_returns: Mapped[float | None] = mapped_column(Float)
+    close_log_returns: Mapped[float | None] = mapped_column(Float)
+    close_cum_returns: Mapped[float | None] = mapped_column(Float)
+    drawdown: Mapped[float | None] = mapped_column(Float)
 
     source: Mapped[str] = mapped_column(String, nullable=False, server_default=text("'yahoo'"))
     run_id: Mapped[str | None] = mapped_column(String, nullable=True)
