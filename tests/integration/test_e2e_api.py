@@ -3,9 +3,11 @@
 Exercises the full HTTP -> FastAPI -> SQLAlchemy -> Postgres path plus real
 Redis for rate limiting and dedup locks -- the things the unit suite (which
 mocks the DB) can't cover: scopes read back from the DB, 403 scope gating,
-429 rate limiting, and 409 idempotence on a real lock.
+429 rate limiting, and 409 idempotence on a real lock. (Redis only exists in
+the local docker stack; in AWS the limiter and locks fail open and API Gateway
+throttling takes over.)
 
-Only truly-external calls (Yahoo/SEC ingestion, Airflow) are stubbed.
+Only truly-external calls (Yahoo/SEC ingestion, Step Functions) are stubbed.
 
 Run it with infra up and env pointed at it, e.g.:
     FDP_E2E=1 ENV=prod \
@@ -58,8 +60,8 @@ def client(app_modules):
 
 @pytest.fixture(autouse=True)
 def _stub_external(app_modules, monkeypatch):
-    """Stub the external ingestion + Airflow calls so no real Yahoo/SEC/Airflow
-    traffic happens. The DB and Redis are left real."""
+    """Stub the external ingestion + Step Functions calls so no real
+    Yahoo/SEC/AWS traffic happens. The DB and Redis are left real."""
     _, instruments_router = app_modules
 
     def _fake_upsert(ticker, is_scheduled=True):
@@ -77,8 +79,9 @@ def _stub_external(app_modules, monkeypatch):
     monkeypatch.setattr(instruments_router, "validate_and_upsert_ticker", _fake_upsert)
     monkeypatch.setattr(instruments_router, "register_ticker", lambda *a, **k: None)
     monkeypatch.setattr(instruments_router, "run_fundamentals_pipeline", lambda *a, **k: None)
-    # Airflow "unavailable" -> in-process path (which is the stubbed no-op above).
-    monkeypatch.setattr(instruments_router, "trigger_dag_run", lambda dag_id, conf: False)
+    # Step Functions unconfigured -> in-process path (the stubbed no-ops above).
+    monkeypatch.setattr(instruments_router.settings, "prices_state_machine_arn", None)
+    monkeypatch.setattr(instruments_router.settings, "fanout_state_machine_arn", None)
 
 
 def _create_key(client, label, scopes):

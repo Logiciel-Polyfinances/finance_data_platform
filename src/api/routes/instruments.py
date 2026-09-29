@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import json
 from datetime import date
-from typing import Annotated, Literal
+from functools import cache
+from typing import Annotated, Any, Literal
 
+import boto3
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
@@ -19,6 +24,7 @@ from src.api.schemas import (
     TriggeredJob,
 )
 from src.core.cache import cache_get_json, cache_set_json
+from src.core.config import settings
 from src.core.database import get_db
 from src.core.logger import get_logger
 from src.core.ratelimit import try_acquire_lock
@@ -31,7 +37,6 @@ from src.data.crud.universal_instruments import (
     list_instruments,
     set_scheduled,
 )
-from src.orchestration.airflow_client import trigger_dag_run
 from src.orchestration.pipelines.run_fundamentals import run_fundamentals_pipeline
 from src.orchestration.pipelines.run_register_ticker import register_ticker, validate_and_upsert_ticker
 
@@ -41,23 +46,36 @@ router = APIRouter(prefix="/instruments", tags=["instruments"])
 
 DbSession = Annotated[Session, Depends(get_db)]
 
-# The daily prices DAG doubles as the backfill mechanism: passing symbols_override
-# + start_dt/end_dt in its run conf makes it ingest that ticker's history for the
-# given range (see airflow/dags/price_1d.py).
-_PRICES_DAG_ID = "yf_prices_1d_daily"
-
-# The fundamentals DAG likewise backfills on demand via tickers_override. No date
-# range: SEC companyfacts returns a company's entire XBRL history in one response
-# (see airflow/dags/fundamentals.py).
-_FUNDAMENTALS_DAG_ID = "sec_fundamentals_weekly"
-
 # Dedup window for a ticker's backfill. A second register/refresh for the same
 # ticker+dataset inside this window is treated as already-in-flight and skipped,
 # so two callers (or a retry) can't fan out duplicate Yahoo/SEC pulls. The lock
 # self-expires, so it also caps how often a given ticker can be re-triggered.
 _BACKFILL_LOCK_TTL_SECONDS = 900
 
-Executor = Literal["airflow", "in_process"]
+Executor = Literal["step_functions", "in_process"]
+
+
+@cache
+def _sfn_client():
+    # StartExecution only enqueues the run; short timeouts keep a wedged endpoint
+    # from eating the Lambda's 28s budget.
+    return boto3.client(
+        "stepfunctions",
+        aws_access_key_id=settings.aws_access_key_id,
+        aws_secret_access_key=settings.aws_secret_access_key,
+        aws_session_token=settings.aws_session_token,
+        region_name=settings.aws_region,
+        config=Config(connect_timeout=5, read_timeout=5, retries={"max_attempts": 2}),
+    )
+
+
+def _start_execution(state_machine_arn: str, payload: dict[str, Any]) -> None:
+    try:
+        _sfn_client().start_execution(stateMachineArn=state_machine_arn, input=json.dumps(payload))
+    except (BotoCoreError, ClientError) as e:
+        logger.error("StartExecution on %s failed for %s: %s", state_machine_arn, payload, e)
+        raise HTTPException(status_code=503, detail="could not start the backfill; retry later") from e
+    logger.info("Started %s with input=%s", state_machine_arn, payload)
 
 
 def _trigger_prices(
@@ -68,23 +86,23 @@ def _trigger_prices(
     is_scheduled: bool,
     background_tasks: BackgroundTasks,
 ) -> Executor | None:
-    """Kick off a price backfill for `ticker`. Returns the executor used
-    ("airflow" or "in_process"), or None if a backfill for this ticker is
-    already in flight (dedup lock held)."""
+    """Kick off a price backfill for `ticker`. Returns the executor used, or
+    None if a backfill for this ticker is already in flight (dedup lock held)."""
     if not try_acquire_lock(f"backfill:prices:{ticker}", _BACKFILL_LOCK_TTL_SECONDS):
         logger.info("Price backfill for %s already in flight; skipping duplicate trigger", ticker)
         return None
 
-    # The DAG resolves a missing end_dt to a single day, so pin it to today to
-    # backfill the full [backfill_start, today] range.
-    end_dt = backfill_end or date.today().isoformat()
-    if trigger_dag_run(
-        _PRICES_DAG_ID,
-        conf={"symbols_override": ticker, "start_dt": backfill_start, "end_dt": end_dt},
-    ):
-        return "airflow"
+    if settings.prices_state_machine_arn:
+        # The state machine resolves a missing end_dt to a single day, so pin it
+        # to today to backfill the full [backfill_start, today] range.
+        end_dt = backfill_end or date.today().isoformat()
+        _start_execution(
+            settings.prices_state_machine_arn,
+            {"symbols_override": ticker, "start_dt": backfill_start, "end_dt": end_dt},
+        )
+        return "step_functions"
 
-    logger.info("Airflow unavailable; running price backfill in-process for %s", ticker)
+    logger.info("Step Functions not configured; running price backfill in-process for %s", ticker)
     background_tasks.add_task(
         register_ticker,
         ticker,
@@ -96,16 +114,25 @@ def _trigger_prices(
 
 
 def _trigger_fundamentals(ticker: str, *, background_tasks: BackgroundTasks) -> Executor | None:
-    """Kick off a fundamentals backfill for `ticker`. Returns the executor used,
-    or None if one is already in flight."""
+    """Kick off a SEC fundamentals backfill for `ticker` (no date range: SEC
+    companyfacts returns a company's entire XBRL history in one response).
+    Returns the executor used, or None if one is already in flight."""
     if not try_acquire_lock(f"backfill:fundamentals:{ticker}", _BACKFILL_LOCK_TTL_SECONDS):
         logger.info("Fundamentals backfill for %s already in flight; skipping duplicate trigger", ticker)
         return None
 
-    if trigger_dag_run(_FUNDAMENTALS_DAG_ID, conf={"tickers_override": ticker}):
-        return "airflow"
+    if settings.fanout_state_machine_arn and settings.sec_fundamentals_function_arn:
+        _start_execution(
+            settings.fanout_state_machine_arn,
+            {
+                "mode": "us_only",
+                "run_function": settings.sec_fundamentals_function_arn,
+                "tickers_override": ticker,
+            },
+        )
+        return "step_functions"
 
-    logger.info("Airflow unavailable; running fundamentals backfill in-process for %s", ticker)
+    logger.info("Step Functions not configured; running fundamentals backfill in-process for %s", ticker)
     background_tasks.add_task(run_fundamentals_pipeline, ticker)
     return "in_process"
 
@@ -144,13 +171,12 @@ def create_instrument_route(body: InstrumentCreate, background_tasks: Background
     the initial backfill of both price history and SEC fundamentals can take
     minutes.
 
-    Each backfill is handed to Airflow via its REST API (a durable executor that
-    survives an API restart) -- the prices DAG and the fundamentals DAG. For any
-    DAG that Airflow won't accept (not configured or unreachable), it falls back
-    to running that backfill in an in-process BackgroundTask -- lost on a uvicorn
-    restart, but better than leaving the ticker with no history. A backfill
-    already in flight for this ticker is not re-triggered (dedup lock). Observe
-    progress via GET /runs.
+    Each backfill is started as a Step Functions execution (`fdp-prices-daily`
+    and `fdp-fanout` running `fdp-sec-fundamentals`). Where no state machine is
+    configured (local stack), it runs in an in-process BackgroundTask instead
+    -- lost on a uvicorn restart, but better than leaving the ticker with no
+    history. A backfill already in flight for this ticker is not re-triggered
+    (dedup lock). Observe progress via GET /runs.
     """
     try:
         instrument = validate_and_upsert_ticker(body.ticker, is_scheduled=body.is_scheduled)
@@ -181,7 +207,7 @@ def refresh_instrument_route(
 ):
     """Force a re-fetch for an already-registered ticker without re-registering
     it. Triggers prices and/or fundamentals (default: both) through the same
-    durable-Airflow-then-in-process path as registration.
+    Step-Functions-or-in-process path as registration.
 
     Returns 202 with the jobs actually kicked off. A dataset whose backfill is
     already in flight is omitted from `triggered`; if every requested dataset is

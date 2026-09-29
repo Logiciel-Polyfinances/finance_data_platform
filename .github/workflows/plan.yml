@@ -1,0 +1,50 @@
+name: Plan
+
+on:
+  pull_request:
+    branches: ["master"]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ca-central-1
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same build as deploy.yml, without the push: catches a broken
+      # Dockerfile/lock before merge. The GHA layer cache is shared with deploy.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build Lambda image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.lambda
+          platforms: linux/amd64
+          provenance: false
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::437848352148:role/GitHubActionsAdmin
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+
+      # image_tag = the PR head commit, i.e. the tag a merge would deploy (every
+      # Lambda shows an image_uri change -- expected, each deploy ships a new image).
+      - name: Terraform fmt, init, validate & plan
+        working-directory: infra
+        run: |
+          terraform fmt -check -recursive
+          terraform init -input=false
+          terraform validate
+          terraform plan -input=false -lock=false -var "image_tag=${{ github.event.pull_request.head.sha }}"

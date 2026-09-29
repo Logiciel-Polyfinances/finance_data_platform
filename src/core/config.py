@@ -21,6 +21,8 @@ import os
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from src.core.ssm import load_ssm_parameters_into_env
+
 _ALLOWED_DATABASE_SCHEMES = ("postgresql://", "postgresql+psycopg2://")
 
 
@@ -44,6 +46,10 @@ class Settings(BaseSettings):
     aws_secret_access_key: str | None = Field(
         default=None, validation_alias=AliasChoices("AWS_SECRET_ACCESS_KEY", "SECRET_ACCESS_KEY")
     )
+    # Temporary credentials (Lambda's execution role, an assumed role locally)
+    # come with a session token; without it an explicit key/secret pair is
+    # rejected by AWS as an invalid token.
+    aws_session_token: str | None = Field(default=None, validation_alias=AliasChoices("AWS_SESSION_TOKEN"))
     aws_region: str = Field(
         default="ca-central-1", validation_alias=AliasChoices("AWS_REGION", "AWS_DEFAULT_REGION")
     )
@@ -58,21 +64,35 @@ class Settings(BaseSettings):
     fred_api_key: str | None = Field(default=None, validation_alias=AliasChoices("FRED_API_KEY"))
     openfigi_api_key: str | None = Field(default=None, validation_alias=AliasChoices("OPENFIGI_API_KEY"))
 
+    # Optional, local docker stack only. Deliberately unset in AWS (no Redis is
+    # provisioned, to stay at ~$0/month): the response cache and per-key rate
+    # limiter (src/core/cache.py, src/core/ratelimit.py) then fail open, and
+    # API Gateway's stage/route throttling is the rate limit instead.
     redis_url: str | None = Field(default=None, validation_alias=AliasChoices("REDIS_URL"))
 
-    # Airflow stable REST API, used by the instruments route to hand a new
-    # ticker's initial price backfill to Airflow (a durable executor that
-    # survives an API restart) instead of an in-process BackgroundTask. Leave
-    # unset to keep the in-process fallback. In the docker stack the base URL is
-    # the webserver, e.g. http://airflow-webserver:8080/api/v1.
-    airflow_api_url: str | None = Field(default=None, validation_alias=AliasChoices("AIRFLOW_API_URL"))
-    airflow_username: str | None = Field(default=None, validation_alias=AliasChoices("AIRFLOW_USERNAME"))
-    airflow_password: str | None = Field(default=None, validation_alias=AliasChoices("AIRFLOW_PASSWORD"))
+    # Step Functions targets for the backfills that POST /v1/instruments and
+    # .../refresh start (set by infra/lambda.tf). Unset locally: those backfills
+    # then run in-process as BackgroundTasks.
+    prices_state_machine_arn: str | None = Field(
+        default=None, validation_alias=AliasChoices("PRICES_STATE_MACHINE_ARN")
+    )
+    fanout_state_machine_arn: str | None = Field(
+        default=None, validation_alias=AliasChoices("FANOUT_STATE_MACHINE_ARN")
+    )
+    sec_fundamentals_function_arn: str | None = Field(
+        default=None, validation_alias=AliasChoices("SEC_FUNDAMENTALS_FUNCTION_ARN")
+    )
 
     db_pool_size: int = Field(default=5, validation_alias=AliasChoices("DB_POOL_SIZE"))
     db_max_overflow: int = Field(default=10, validation_alias=AliasChoices("DB_MAX_OVERFLOW"))
     db_pool_timeout: int = Field(default=30, validation_alias=AliasChoices("DB_POOL_TIMEOUT"))
     db_pool_recycle: int = Field(default=1800, validation_alias=AliasChoices("DB_POOL_RECYCLE"))
+    # Disable SQLAlchemy's own pool (NullPool: open/close a connection per
+    # session). Set in AWS Lambda, which talks to Supabase through its
+    # transaction-mode pooler (Supavisor, port 6543): the pooler already
+    # multiplexes connections, and a client-side pool frozen between Lambda
+    # invocations would only hold stale connections open.
+    db_null_pool: bool = Field(default=False, validation_alias=AliasChoices("DB_NULL_POOL"))
 
     log_level: str = Field(default="INFO", validation_alias=AliasChoices("LOG_LEVEL"))
 
@@ -138,6 +158,10 @@ class Settings(BaseSettings):
             os.environ["AWS_DEFAULT_REGION"] = self.aws_region
         return self
 
+
+# In AWS, secrets arrive as `<NAME>_SSM_PARAM` pointers (never plain values);
+# resolve them into the environment before Settings reads it. No-op locally.
+load_ssm_parameters_into_env()
 
 # pydantic-settings populates every field from the environment (.env / real env
 # vars) at construction time, so no arguments are passed here. Static type

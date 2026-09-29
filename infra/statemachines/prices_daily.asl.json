@@ -1,0 +1,83 @@
+{
+  "Comment": "Daily Yahoo prices: Bronze -> Silver -> Gold (former Airflow DAG yf_prices_1d_daily). Optional input, all keys optional: {\"symbols_override\": \"AAPL,MSFT\", \"start_dt\": \"YYYY-MM-DD\", \"end_dt\": \"YYYY-MM-DD\", \"limit_tickers\": 0}",
+  "QueryLanguage": "JSONata",
+  "StartAt": "GetTickers",
+  "States": {
+    "GetTickers": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${get_tickers_arn}",
+        "Payload": "{% $merge([$states.input, {'mode': 'all'}]) %}"
+      },
+      "Assign": {
+        "params": "{% $states.input %}",
+        "tickers": "{% $states.result.Payload.tickers %}"
+      },
+      "Output": "{% $states.result.Payload %}",
+      "Retry": ${retry},
+      "Next": "HasTickers"
+    },
+    "HasTickers": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $count($tickers) > 0 %}",
+          "Next": "BronzeIngest"
+        }
+      ],
+      "Default": "NoTickersScheduled"
+    },
+    "NoTickersScheduled": {
+      "Type": "Succeed",
+      "Comment": "Empty universe (Airflow: AirflowSkipException 'No tickers scheduled.')"
+    },
+    "BronzeIngest": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${prices_bronze_arn}",
+        "Payload": "{% $merge([$params, {'tickers': $tickers}]) %}"
+      },
+      "Output": "{% $states.result.Payload %}",
+      "Retry": ${retry},
+      "Next": "SilverTransform"
+    },
+    "SilverTransform": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${prices_silver_arn}",
+        "Payload": "{% $states.input %}"
+      },
+      "Output": "{% $states.result.Payload %}",
+      "Retry": ${retry},
+      "Next": "HasSilverRows"
+    },
+    "HasSilverRows": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $states.input.silver_rows > 0 %}",
+          "Next": "GoldLoad"
+        }
+      ],
+      "Default": "MarketClosed"
+    },
+    "MarketClosed": {
+      "Type": "Succeed",
+      "Comment": "No rows after cleaning (market closed / Yahoo returned nothing) -- nothing to load"
+    },
+    "GoldLoad": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${prices_gold_arn}",
+        "Payload": "{% $states.input %}"
+      },
+      "Output": "{% $states.result.Payload %}",
+      "Retry": ${retry},
+      "End": true
+    }
+  }
+}

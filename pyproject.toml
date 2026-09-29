@@ -5,6 +5,8 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi==0.110.0",
     "uvicorn[standard]==0.29.0",
+    # ASGI -> AWS Lambda adapter (API Gateway HTTP API events), see src/main.py::handler.
+    "mangum==0.19.0",
     "sqlalchemy==2.0.29",
     "psycopg2-binary==2.9.9",
     "alembic==1.13.1",
@@ -17,6 +19,8 @@ dependencies = [
     "httpx==0.27.0",
     "pydantic==2.6.4",
     "pydantic-settings==2.2.1",
+    # Only used by the local docker stack (docker-compose.local.yml); no Redis in
+    # AWS -- src/core/cache.py / ratelimit.py fail open without REDIS_URL.
     "redis==5.0.3",
     "python-dotenv==1.0.1",
     # 0.2.37 (early 2024) broke against Yahoo's cookie/crumb + browser-impersonation

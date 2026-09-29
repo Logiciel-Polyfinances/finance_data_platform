@@ -14,8 +14,9 @@ src/
     logger.py                   structured logging (level, timestamp, module)
     constants.py                 DEFAULT_BACKFILL_START, FRED_COLUMN_SERIES
     bucket_utils.py                S3 client factory
-    cache.py                       fail-open Redis cache for GET routes
-    ratelimit.py                    fail-open per-key rate limits + dedup locks
+    ssm.py                         resolves <NAME>_SSM_PARAM pointers from SSM (AWS)
+    cache.py                       fail-open Redis cache for GET routes (local only)
+    ratelimit.py                    fail-open per-key rate limits + dedup locks (local only)
     retry.py                        call_with_backoff(): shared exponential backoff
 
   ingestion/                fetch external data, write Bronze
@@ -45,9 +46,14 @@ src/
                             wrapped with ingestion_runs tracking
     run_prices.py, run_macro.py, run_fundamentals.py, run_map_figi.py
     run_register_ticker.py, backfill_prices.py
+  orchestration/universe.py which tickers each scheduled job runs over
+
+  lambda_handlers/          AWS Lambda entry points (thin wrappers over pipelines)
 
 alembic/versions/         one migration per table, linear history
-airflow/dags/             daily DAGs calling the pipelines above
+infra/                    Terraform: Lambda (container image), Step Functions,
+                            EventBridge Scheduler, API Gateway, S3, ECR, IAM
+Dockerfile.lambda         the single Lambda image (API + every ETL function)
 tests/unit/               one test file per silver transform / pipeline helper
 
 frontend/                 React + Vite internal admin UI, served at /app

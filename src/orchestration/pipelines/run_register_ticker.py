@@ -5,7 +5,7 @@ universal_instruments -> kick off an initial multi-year price backfill so the
 ticker isn't sitting in the universe with no history until the next
 scheduled run.
 
-Whether the daily prices_1d DAG (airflow/dags/price_1d.py) picks the ticker
+Whether the daily prices state machine (fdp-prices-daily) picks the ticker
 up afterwards is controlled entirely by universal_instruments.is_scheduled --
 get_scheduled_universe() already filters on is_active AND is_scheduled, so
 that one column *is* the "enable/disable automatic ETL" switch. Pass
@@ -60,7 +60,7 @@ def validate_and_upsert_ticker(ticker: str, *, is_scheduled: bool = True) -> dic
     history. Split out of register_ticker() so the API layer can give
     synchronous feedback (invalid ticker -> 4xx) before handing the slow part
     (backfill_prices(), which can take minutes for years of history) to a
-    background task.
+    Step Functions execution or a background task.
     """
     ticker = ticker.strip().upper()
     if not ticker:

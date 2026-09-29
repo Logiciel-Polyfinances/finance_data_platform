@@ -28,3 +28,9 @@ frontend/dist
 .DS_Store
 .idea/
 .vscode/
+
+# Terraform (infra/) -- .terraform.lock.hcl IS committed
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
