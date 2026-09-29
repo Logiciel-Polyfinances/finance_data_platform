@@ -44,7 +44,7 @@ class RefreshRequest(BaseModel):
 
 class TriggeredJob(BaseModel):
     dataset: Literal["prices", "fundamentals"]
-    executor: Literal["airflow", "in_process"]
+    executor: Literal["step_functions", "in_process"]
 
 
 class RefreshResponse(BaseModel):

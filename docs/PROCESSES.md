@@ -19,8 +19,8 @@ pipeline over an overlapping window is always safe.
 
 ## Daily ingestion (prices / macro / fundamentals)
 
-Each source has one pipeline in `src/orchestration/pipelines/` and one Airflow
-DAG. They all share this shape:
+Each source has one pipeline in `src/orchestration/pipelines/`, run on AWS by
+Lambda (see Orchestration below). They all share this shape:
 
 1. **Start the run** — `start_run()` writes an `ingestion_runs` row (`status=running`).
 2. **Resolve the start date** — read `ingestion_watermarks` for the last
@@ -56,14 +56,15 @@ idempotent, a backfill and the daily job can overlap without creating duplicates
 
 1. Fetch and validate the ticker's Yahoo `.info` metadata (rejects unknown symbols).
 2. `UPSERT` it into `universal_instruments`.
-3. Immediately run an initial `backfill_prices()` for it.
+3. Kick off the initial backfill of its price history and SEC fundamentals.
 
-The `is_scheduled` flag controls enrolment in the daily DAG: register with
+The `is_scheduled` flag controls enrolment in the scheduled runs: register with
 `is_scheduled=False` to load a ticker without adding it to the automatic ETL,
 then `set_scheduled()` flips it on later. Also exposed over the API as
 `POST /v1/instruments` + `PATCH /v1/instruments/{ticker}/scheduled` (a `write`
 scope), with `POST /v1/instruments/{ticker}/refresh` to force a re-fetch of an
-already-registered ticker.
+already-registered ticker. On AWS step 3 starts `fdp-prices-daily` and
+`fdp-fanout` executions for that ticker; locally it runs in-process.
 
 ## FIGI mapping (`run_map_figi.py`)
 
@@ -77,14 +78,29 @@ FRED — the mapping is populated, but nothing consumes it for reconciliation ye
 `src/main.py` (FastAPI) reads **only the Gold tables** — it never touches
 Bronze/Silver or the external providers. Read routes support `limit`/`offset`
 pagination (with an `X-Total-Count` header) and are cached in Redis for a short
-TTL, failing open if Redis is unreachable. Every route except `/health` requires
+TTL when Redis is configured (local docker stack only -- in AWS there is no
+Redis and the cache fails open). Every route except `/health` requires
 an `X-API-Key` header once `ENV != local`. The React admin UI is served at
 `/app` and talks to these same routes.
 
-## Orchestration (Airflow)
+## Orchestration (AWS: EventBridge Scheduler + Step Functions + Lambda)
 
-DAGs in `airflow/dags/` call the pipeline functions above on a schedule — prices
-daily, macro / fundamentals / FIGI weekly. Each Bronze / Silver / Gold step is a
-separate Airflow task so retries and observability are per-stage. The DAG and a
-local/manual run share the exact same pipeline code; the DAG does not
-re-implement any logic.
+Thin handlers in `src/lambda_handlers/` call the pipeline functions above; all
+run from one container image. EventBridge Scheduler fires them on the former
+DAG crons (America/Montreal):
+
+- **`fdp-prices-daily`** state machine — get tickers → Bronze → Silver →
+  (stop if 0 rows: market closed) → Gold, each stage its own Lambda with
+  retries (2x, 5 min apart) so failures are per-stage.
+- **`fdp-fanout`** state machine — get tickers (filtered by universe mode, see
+  `src/orchestration/universe.py`) → a Map running one Lambda per ticker with
+  bounded concurrency (SEC fundamentals, yfinance fundamentals, OpenFIGI). A
+  failed ticker doesn't stop the others; the execution fails at the end.
+- **`fdp-fred-macro`** state machine — resolve the series list
+  (`FRED_COLUMN_SERIES`) → a Map running one Lambda per series, each retried on
+  its own; the execution fails at the end if any series did.
+- **Direct Lambda** (single step) — fundamental ratios, instrument metrics.
+
+A Lambda run and a local/manual run share the exact same pipeline code.
+Definitions: `infra/stepfunctions.tf`, `infra/statemachines/*.asl.json`,
+`infra/eventbridge.tf`.

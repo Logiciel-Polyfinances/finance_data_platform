@@ -2,10 +2,10 @@
 Single source of truth for the Yahoo prices_1d pipeline (Bronze -> Silver -> Gold).
 
 Split into three steps (bronze_ingest / silver_transform / gold_load) so the
-Airflow DAG (airflow/dags/price_1d.py) can call each one as its own task for
-retries/observability, while run_prices_pipeline() chains them for local/manual
-runs. Both call paths now share the exact same code -- previously the DAG
-re-implemented this logic inline and had drifted from this module.
+`fdp-prices-daily` Step Functions state machine can run each one as its own
+Lambda (src/lambda_handlers/prices.py) for retries/observability, while
+run_prices_pipeline() chains them for local/manual runs. Both call paths share
+the exact same code.
 """
 
 from __future__ import annotations

@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from mangum import Mangum
 
 from src.api.routes import api_keys, charts, fundamentals, health, instruments, macro, prices, runs
 from src.core.config import settings
@@ -63,3 +64,8 @@ if FRONTEND_DIR.is_dir():
     app.mount("/app", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
 else:
     logger.warning("frontend/dist not found -- run `npm run build` in frontend/ to serve the UI at /app")
+
+# AWS Lambda entry point (API Gateway HTTP API -> Lambda proxy, payload v2).
+# lifespan="off": the app defines no startup/shutdown hooks, and skipping the
+# lifespan handshake shaves a little off every cold start.
+handler = Mangum(app, lifespan="off")

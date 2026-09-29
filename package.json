@@ -11,8 +11,6 @@
     "local:reset": "docker compose -f docker-compose.local.yml down -v",
     "local:logs": "docker compose -f docker-compose.local.yml logs -f",
     "local:ps": "docker compose -f docker-compose.local.yml ps",
-    "up": "docker compose up -d",
-    "down": "docker compose down",
     "frontend": "npm --prefix frontend run dev",
     "frontend:install": "npm --prefix frontend install",
     "frontend:build": "npm --prefix frontend run build",

@@ -1,0 +1,110 @@
+name: Deploy
+
+on:
+  push:
+    branches: ["master"]
+  # Manual re-deploy (e.g. after rotating a secret) without an empty commit.
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+# Never run two applies against the same state at once.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ca-central-1
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.10.9"
+          enable-cache: true
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::437848352148:role/GitHubActionsAdmin
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: infra
+        run: terraform init -input=false
+
+      # The Lambdas reference an image that must already be in ECR, so the
+      # repository is created (no-op after the first deploy) before the build.
+      - name: Ensure ECR repository exists
+        working-directory: infra
+        run: |
+          terraform apply -input=false -auto-approve -var "image_tag=${IMAGE_TAG}" \
+            -target=aws_ecr_repository.lambda \
+            -target=aws_ecr_repository_policy.lambda \
+            -target=aws_ecr_lifecycle_policy.lambda
+          echo "ECR_REPOSITORY=$(terraform output -raw ecr_repository_url)" >> "$GITHUB_ENV"
+
+      - name: Log in to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      # One image for every Lambda (see Dockerfile.lambda). provenance=false:
+      # Lambda rejects the multi-manifest index buildx emits with attestations.
+      - name: Build & push Lambda image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.lambda
+          platforms: linux/amd64
+          provenance: false
+          push: true
+          tags: ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Migrations run BEFORE the new code goes live (expand-then-deploy), over
+      # Supabase's session pooler (5432): alembic needs a real session, the
+      # transaction pooler (6543) the Lambdas use is not meant for DDL.
+      # The URL only exists inside this step, masked from the logs.
+      - name: Database migrations (alembic upgrade head)
+        run: |
+          DATABASE_URL="$(aws ssm get-parameter --with-decryption \
+            --name /finance-data-platform/supabase/session-pooler-url \
+            --query Parameter.Value --output text)"
+          echo "::add-mask::${DATABASE_URL}"
+          export DATABASE_URL
+          # src/core/config.py requires BUCKET_ID to be set; migrations never touch S3.
+          export BUCKET_ID=unused-by-migrations
+          uv sync --frozen --no-dev
+          uv run --no-sync alembic upgrade head
+
+      - name: Terraform apply
+        working-directory: infra
+        run: terraform apply -input=false -auto-approve -var "image_tag=${IMAGE_TAG}"
+
+      - name: Smoke test (GET /health)
+        working-directory: infra
+        run: |
+          API_URL="$(terraform output -raw api_url)"
+          # /health is unauthenticated and does a real SELECT 1 against Supabase.
+          # Retries absorb the first cold start of the new image.
+          curl --fail --silent --show-error --retry 5 --retry-delay 5 --retry-all-errors \
+            --max-time 30 "${API_URL}/health"
+          echo
+          echo "Deployed: ${API_URL} (UI: ${API_URL}/app/)"

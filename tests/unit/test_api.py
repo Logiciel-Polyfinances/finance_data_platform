@@ -1,3 +1,4 @@
+import json
 from datetime import date
 
 import pytest
@@ -100,82 +101,141 @@ def test_get_instrument_found(monkeypatch, client):
     assert resp.json()["ticker"] == "SOFI"
 
 
-def test_create_instrument_returns_202_and_schedules_backfill(monkeypatch, client):
-    monkeypatch.setattr(
-        instruments_router,
-        "validate_and_upsert_ticker",
-        lambda ticker, is_scheduled=True: {
-            "id": 1,
-            "ticker": ticker,
-            "name": "SoFi Technologies",
-            "exchange": "NMS",
-            "currency": "USD",
-            "timezone": "America/New_York",
-            "is_active": True,
-            "is_scheduled": is_scheduled,
-        },
-    )
-    called_with = {}
+def _fake_upsert(ticker, is_scheduled=True):
+    return {
+        "id": 1,
+        "ticker": ticker,
+        "name": "SoFi Technologies",
+        "exchange": "NMS",
+        "currency": "USD",
+        "timezone": "America/New_York",
+        "is_active": True,
+        "is_scheduled": is_scheduled,
+    }
+
+
+@pytest.fixture
+def backfills(monkeypatch):
+    """Step Functions unconfigured and dedup locks free by default; records
+    both the in-process fallbacks and any StartExecution calls."""
+    calls = {"register": [], "fundamentals": [], "sfn": []}
+    for name in ("prices_state_machine_arn", "fanout_state_machine_arn", "sec_fundamentals_function_arn"):
+        monkeypatch.setattr(instruments_router.settings, name, None)
+    monkeypatch.setattr(instruments_router, "try_acquire_lock", lambda name, ttl_seconds: True)
     monkeypatch.setattr(
         instruments_router,
         "register_ticker",
-        lambda ticker, **kwargs: called_with.update(ticker=ticker, **kwargs),
+        lambda ticker, **kwargs: calls["register"].append({"ticker": ticker, **kwargs}),
     )
-    fundamentals_called = {}
     monkeypatch.setattr(
-        instruments_router,
-        "run_fundamentals_pipeline",
-        lambda ticker: fundamentals_called.update(ticker=ticker),
+        instruments_router, "run_fundamentals_pipeline", lambda ticker: calls["fundamentals"].append(ticker)
     )
 
-    resp = client.post("/v1/instruments", json={"ticker": "sofi"})
+    class _FakeSfn:
+        def start_execution(self, stateMachineArn, input):
+            calls["sfn"].append((stateMachineArn, json.loads(input)))
+
+    monkeypatch.setattr(instruments_router, "_sfn_client", lambda: _FakeSfn())
+    return calls
+
+
+def _configure_sfn(monkeypatch):
+    monkeypatch.setattr(instruments_router.settings, "prices_state_machine_arn", "arn:prices")
+    monkeypatch.setattr(instruments_router.settings, "fanout_state_machine_arn", "arn:fanout")
+    monkeypatch.setattr(instruments_router.settings, "sec_fundamentals_function_arn", "arn:sec")
+
+
+def test_create_instrument_runs_backfills_in_process_without_step_functions(monkeypatch, client, backfills):
+    monkeypatch.setattr(instruments_router, "validate_and_upsert_ticker", _fake_upsert)
+
+    resp = client.post("/v1/instruments", json={"ticker": "sofi", "is_scheduled": False})
 
     assert resp.status_code == 202
     assert resp.json()["ticker"] == "sofi"
-    # the background tasks themselves only run after the response is sent in a
-    # real server; TestClient runs them inline, so we can assert they fired.
-    # Airflow is unconfigured in tests, so both backfills take the in-process path.
-    assert called_with["ticker"] == "SOFI"
-    assert fundamentals_called["ticker"] == "SOFI"
+    # TestClient runs BackgroundTasks inline, so the fallbacks have fired.
+    assert backfills["register"] == [
+        {"ticker": "SOFI", "is_scheduled": False, "backfill_start": "2015-01-01", "backfill_end": None}
+    ]
+    assert backfills["fundamentals"] == ["SOFI"]
+    assert backfills["sfn"] == []
 
 
-def test_create_instrument_triggers_airflow_dag_and_skips_in_process(monkeypatch, client):
-    monkeypatch.setattr(
-        instruments_router,
-        "validate_and_upsert_ticker",
-        lambda ticker, is_scheduled=True: {
-            "id": 1,
-            "ticker": ticker,
-            "name": "SoFi Technologies",
-            "exchange": "NMS",
-            "currency": "USD",
-            "timezone": "America/New_York",
-            "is_active": True,
-            "is_scheduled": is_scheduled,
-        },
-    )
-    triggers = []
-    monkeypatch.setattr(
-        instruments_router,
-        "trigger_dag_run",
-        lambda dag_id, conf: triggers.append((dag_id, conf)) or True,
-    )
-    # If Airflow accepts both runs, neither in-process fallback must fire.
-    called = {"register": False, "fundamentals": False}
-    monkeypatch.setattr(instruments_router, "register_ticker", lambda *a, **k: called.update(register=True))
-    monkeypatch.setattr(
-        instruments_router, "run_fundamentals_pipeline", lambda *a, **k: called.update(fundamentals=True)
-    )
+def test_create_instrument_starts_step_functions_and_skips_in_process(monkeypatch, client, backfills):
+    monkeypatch.setattr(instruments_router, "validate_and_upsert_ticker", _fake_upsert)
+    _configure_sfn(monkeypatch)
 
     resp = client.post("/v1/instruments", json={"ticker": "sofi", "backfill_start": "2020-01-01"})
 
     assert resp.status_code == 202
-    by_dag = {dag_id: conf for dag_id, conf in triggers}
-    assert by_dag["yf_prices_1d_daily"]["symbols_override"] == "SOFI"
-    assert by_dag["yf_prices_1d_daily"]["start_dt"] == "2020-01-01"
-    assert by_dag["sec_fundamentals_weekly"]["tickers_override"] == "SOFI"
-    assert called["register"] is False
-    assert called["fundamentals"] is False
+    by_arn = dict(backfills["sfn"])
+    # A missing backfill_end is pinned to today, not left to the state
+    # machine's single-day fallback.
+    assert by_arn["arn:prices"] == {
+        "symbols_override": "SOFI",
+        "start_dt": "2020-01-01",
+        "end_dt": date.today().isoformat(),
+    }
+    assert by_arn["arn:fanout"] == {"mode": "us_only", "run_function": "arn:sec", "tickers_override": "SOFI"}
+    assert backfills["register"] == []
+    assert backfills["fundamentals"] == []
+
+
+def test_create_instrument_503_when_step_functions_rejects(monkeypatch, client, backfills):
+    from botocore.exceptions import ClientError
+
+    monkeypatch.setattr(instruments_router, "validate_and_upsert_ticker", _fake_upsert)
+    _configure_sfn(monkeypatch)
+
+    class _FailingSfn:
+        def start_execution(self, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "ThrottlingException", "Message": "slow down"}}, "StartExecution"
+            )
+
+    monkeypatch.setattr(instruments_router, "_sfn_client", lambda: _FailingSfn())
+
+    resp = client.post("/v1/instruments", json={"ticker": "sofi"})
+
+    assert resp.status_code == 503
+    assert backfills["register"] == []
+
+
+def test_refresh_404_for_unregistered_ticker(monkeypatch, client, backfills):
+    monkeypatch.setattr(instruments_router, "get_instrument", lambda db, ticker: None)
+
+    resp = client.post("/v1/instruments/NOPE/refresh", json={})
+
+    assert resp.status_code == 404
+
+
+def test_refresh_triggers_requested_datasets(monkeypatch, client, backfills):
+    monkeypatch.setattr(instruments_router, "get_instrument", lambda db, ticker: _instrument())
+
+    resp = client.post("/v1/instruments/sofi/refresh", json={"datasets": ["prices"]})
+
+    assert resp.status_code == 202
+    assert resp.json() == {"ticker": "SOFI", "triggered": [{"dataset": "prices", "executor": "in_process"}]}
+    assert backfills["fundamentals"] == []
+
+
+def test_refresh_via_step_functions(monkeypatch, client, backfills):
+    monkeypatch.setattr(instruments_router, "get_instrument", lambda db, ticker: _instrument())
+    _configure_sfn(monkeypatch)
+
+    resp = client.post("/v1/instruments/SOFI/refresh", json={"backfill_end": "2024-12-31"})
+
+    assert resp.status_code == 202
+    assert [j["executor"] for j in resp.json()["triggered"]] == ["step_functions", "step_functions"]
+    assert dict(backfills["sfn"])["arn:prices"]["end_dt"] == "2024-12-31"
+
+
+def test_refresh_409_when_all_datasets_already_in_flight(monkeypatch, client, backfills):
+    monkeypatch.setattr(instruments_router, "get_instrument", lambda db, ticker: _instrument())
+    monkeypatch.setattr(instruments_router, "try_acquire_lock", lambda name, ttl_seconds: False)
+
+    resp = client.post("/v1/instruments/SOFI/refresh", json={})
+
+    assert resp.status_code == 409
 
 
 def test_create_instrument_rejects_invalid_ticker(monkeypatch, client):

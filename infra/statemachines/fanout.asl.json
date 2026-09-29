@@ -1,0 +1,86 @@
+{
+  "Comment": "Generic per-ticker fan-out (former DAGs sec_fundamentals_weekly, yf_fundamentals_weekly, openfigi_mapping_weekly). Input: {\"mode\": \"all|us_only|non_us_only\", \"run_function\": \"<function name or ARN>\", \"max_concurrency\": 5, \"tickers_override\": \"AAPL,MSFT\" (optional)}. One ticker failing (after its retries) doesn't stop the others; the execution fails at the end if any did, like a DAG run with a failed mapped task.",
+  "QueryLanguage": "JSONata",
+  "StartAt": "GetTickers",
+  "States": {
+    "GetTickers": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${get_tickers_arn}",
+        "Payload": "{% $states.input %}"
+      },
+      "Assign": {
+        "tickers": "{% $states.result.Payload.tickers %}",
+        "run_function": "{% $states.input.run_function %}",
+        "max_concurrency": "{% $exists($states.input.max_concurrency) ? $states.input.max_concurrency : 5 %}"
+      },
+      "Retry": ${retry},
+      "Next": "RunEachTicker"
+    },
+    "RunEachTicker": {
+      "Type": "Map",
+      "Items": "{% $tickers %}",
+      "MaxConcurrency": "{% $max_concurrency %}",
+      "ItemSelector": {
+        "ticker": "{% $states.context.Map.Item.Value %}",
+        "run_function": "{% $run_function %}"
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "RunTicker",
+        "States": {
+          "RunTicker": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Arguments": {
+              "FunctionName": "{% $states.input.run_function %}",
+              "Payload": {
+                "ticker": "{% $states.input.ticker %}"
+              }
+            },
+            "Output": {
+              "ticker": "{% $states.input.ticker %}",
+              "status": "succeeded",
+              "rows": "{% $states.result.Payload.rows %}"
+            },
+            "Retry": ${retry},
+            "Catch": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "Output": "{% {'ticker': $states.input.ticker, 'status': 'failed', 'error': $states.errorOutput.Error, 'cause': $substring($string($states.errorOutput.Cause), 0, 300)} %}",
+                "Next": "TickerFailed"
+              }
+            ],
+            "End": true
+          },
+          "TickerFailed": {
+            "Type": "Pass",
+            "End": true
+          }
+        }
+      },
+      "Next": "AnyTickerFailed"
+    },
+    "AnyTickerFailed": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $count($states.input[status = 'failed']) > 0 %}",
+          "Next": "PartialFailure"
+        }
+      ],
+      "Default": "AllSucceeded"
+    },
+    "PartialFailure": {
+      "Type": "Fail",
+      "Error": "TickersFailed",
+      "Cause": "{% 'Failed tickers: ' & $join([$states.input[status = 'failed'].ticker], ', ') %}"
+    },
+    "AllSucceeded": {
+      "Type": "Succeed"
+    }
+  }
+}

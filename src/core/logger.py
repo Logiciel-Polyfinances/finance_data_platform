@@ -1,7 +1,7 @@
 """
 Structured logging (level, timestamp, module) for every module in the
 codebase, replacing the ad-hoc print() calls that made pipeline output
-impossible to filter/aggregate in Airflow or any log tool.
+impossible to filter/aggregate in CloudWatch or any log tool.
 
 Usage:
     from src.core.logger import get_logger
@@ -40,7 +40,7 @@ def _configure() -> None:
     root.setLevel(settings.log_level.upper())
     root.addHandler(handler)
     # This handler is the single source of formatting for "src.*" loggers --
-    # don't also hand records to the real root logger (Airflow/pytest already
+    # don't also hand records to the real root logger (Lambda/pytest already
     # configure their own handlers, which would otherwise double-print).
     root.propagate = False
 

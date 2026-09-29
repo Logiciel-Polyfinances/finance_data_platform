@@ -1,0 +1,16 @@
+# Keep the build context small (both `dockerfile` and `Dockerfile.lambda`
+# build from the repo root) and never ship local secrets/state into an image.
+.git
+.github
+.venv
+**/__pycache__
+**/*.py[cod]
+.ruff_cache
+.pytest_cache
+.env
+.env.*
+frontend/node_modules
+frontend/dist
+infra
+tests
+docs

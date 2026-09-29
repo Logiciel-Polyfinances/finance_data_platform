@@ -17,6 +17,7 @@ def get_s3_client():
     kwargs = {
         "aws_access_key_id": settings.aws_access_key_id,
         "aws_secret_access_key": settings.aws_secret_access_key,
+        "aws_session_token": settings.aws_session_token,
         "region_name": settings.aws_region,
     }
     # MinIO (and most S3-compatible stores) need path-style addressing.

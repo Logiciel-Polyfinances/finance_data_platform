@@ -1,0 +1,84 @@
+{
+  "Comment": "Weekly FRED macro/FX series (former Airflow DAG fred_macro_weekly): resolve the series list, then one Lambda per series. Optional input: {\"series_override\": \"cpi,gdp\", \"max_concurrency\": 5}. One series failing (after its retries) doesn't stop the others; the execution fails at the end if any did, like a DAG run with a failed mapped task.",
+  "QueryLanguage": "JSONata",
+  "StartAt": "GetSeries",
+  "States": {
+    "GetSeries": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${fred_series_arn}",
+        "Payload": "{% $states.input %}"
+      },
+      "Assign": {
+        "series": "{% $states.result.Payload.series %}",
+        "max_concurrency": "{% $exists($states.input.max_concurrency) ? $states.input.max_concurrency : 5 %}"
+      },
+      "Retry": ${retry},
+      "Next": "RunEachSeries"
+    },
+    "RunEachSeries": {
+      "Type": "Map",
+      "Items": "{% $series %}",
+      "MaxConcurrency": "{% $max_concurrency %}",
+      "ItemSelector": {
+        "series": "{% $states.context.Map.Item.Value %}"
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "RunSeries",
+        "States": {
+          "RunSeries": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Arguments": {
+              "FunctionName": "${fred_macro_arn}",
+              "Payload": {
+                "series": "{% $states.input.series %}"
+              }
+            },
+            "Output": {
+              "series": "{% $states.input.series %}",
+              "status": "succeeded",
+              "rows": "{% $states.result.Payload.rows %}"
+            },
+            "Retry": ${retry},
+            "Catch": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "Output": "{% {'series': $states.input.series, 'status': 'failed', 'error': $states.errorOutput.Error, 'cause': $substring($string($states.errorOutput.Cause), 0, 300)} %}",
+                "Next": "SeriesFailed"
+              }
+            ],
+            "End": true
+          },
+          "SeriesFailed": {
+            "Type": "Pass",
+            "End": true
+          }
+        }
+      },
+      "Next": "AnySeriesFailed"
+    },
+    "AnySeriesFailed": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $count($states.input[status = 'failed']) > 0 %}",
+          "Next": "PartialFailure"
+        }
+      ],
+      "Default": "AllSucceeded"
+    },
+    "PartialFailure": {
+      "Type": "Fail",
+      "Error": "SeriesFailed",
+      "Cause": "{% 'Failed series: ' & $join([$states.input[status = 'failed'].series], ', ') %}"
+    },
+    "AllSucceeded": {
+      "Type": "Succeed"
+    }
+  }
+}
